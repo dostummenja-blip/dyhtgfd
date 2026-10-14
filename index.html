@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JS Minecraft Clone (Three.js)</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
+        /* Прицел по центру экрана */
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 16px;
+            height: 16px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.85);
+            box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+        }
+        #crosshair::before {
+            top: 7px; left: 0; width: 16px; height: 2px;
+        }
+        #crosshair::after {
+            top: 0; left: 7px; width: 2px; height: 16px;
+        }
+        /* Хотбар (инвентарь) */
+        #hotbar {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 8px;
+            border-radius: 8px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            z-index: 10;
+        }
+        .slot {
+            width: 54px;
+            height: 54px;
+            border: 3px solid #555;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 11px;
+            position: relative;
+            border-radius: 4px;
+            transition: transform 0.1s, border-color 0.1s;
+        }
+        .slot.active {
+            border-color: #fff;
+            transform: scale(1.08);
+            background: rgba(255, 255, 255, 0.15);
+        }
+        .slot span.key {
+            position: absolute;
+            top: 2px;
+            left: 5px;
+            font-size: 11px;
+            font-weight: bold;
+            color: #ddd;
+            text-shadow: 1px 1px 0 #000;
+        }
+        .slot canvas {
+            width: 32px;
+            height: 32px;
+            image-rendering: pixelated;
+            border: 1px solid rgba(0,0,0,0.4);
+        }
+        /* Экран паузы / старта */
+        #overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.65);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            z-index: 20;
+            text-align: center;
+            cursor: pointer;
+        }
+        #overlay h1 {
+            margin: 0 0 15px 0;
+            font-size: 42px;
+            text-shadow: 2px 2px 4px #000;
+        }
+        #overlay p {
+            margin: 6px 0;
+            font-size: 18px;
+            color: #ddd;
+        }
+        .controls-box {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px 25px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+    </style>
+    <!-- Подключение Three.js через CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+<div id="overlay">
+    <h1>MINECRAFT JS</h1>
+    <p><strong>Кликните в любом месте, чтобы начать игру</strong></p>
+    <div class="controls-box">
+        <p><b>W, A, S, D</b> — Передвижение | <b>Пробел</b> — Прыжок</p>
+        <p><b>ЛКМ</b> — Разрушить блок | <b>ПКМ</b> — Поставить блок</p>
+        <p><b>1 – 5</b> или <b>Колесико мыши</b> — Выбор блока</p>
+        <p><b>ESC</b> — Освободить курсор</p>
+    </div>
+</div>
+
+<div id="crosshair"></div>
+<div id="hotbar"></div>
+
+<script>
+// ==================== 1. ПРОЦЕДУРНАЯ ГЕНЕРАЦИЯ ТЕКСТУР ====================
+function createNoiseTexture(drawFn) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    const ctx = canvas.getContext('2d');
+    drawFn(ctx);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    return { texture, canvas };
+}
+
+function fillPixelNoise(ctx, baseHex, variance, extraFn) {
+    const rBase = parseInt(baseHex.slice(1, 3), 16);
+    const gBase = parseInt(baseHex.slice(3, 5), 16);
+    const bBase = parseInt(baseHex.slice(5, 7), 16);
+
+    for (let x = 0; x < 16; x++) {
+        for (let y = 0; y < 16; y++) {
+            const v = Math.floor((Math.random() - 0.5) * variance);
+            const r = Math.min(255, Math.max(0, rBase + v));
+            const g = Math.min(255, Math.max(0, gBase + v));
+            const b = Math.min(255, Math.max(0, bBase + v));
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(x, y, 1, 1);
+            if (extraFn) extraFn(ctx, x, y);
+        }
+    }
+}
+
+const textures = {
+    grassTop: createNoiseTexture(ctx => fillPixelNoise(ctx, '#589c36', 28)),
+    dirt: createNoiseTexture(ctx => fillPixelNoise(ctx, '#79553a', 25)),
+    grassSide: createNoiseTexture(ctx => {
+        fillPixelNoise(ctx, '#79553a', 25);
+        for (let x = 0; x < 16; x++) {
+            const grassDepth = 2 + Math.floor(Math.random() * 3);
+            for (let y = 0; y < grassDepth; y++) {
+                const v = Math.floor((Math.random() - 0.5) * 25);
+                ctx.fillStyle = `rgb(${88 + v}, ${156 + v}, ${54 + v})`;
+                ctx.fillRect(x, y, 1, 1);
+            }
+        }
+    }),
+    stone: createNoiseTexture(ctx => fillPixelNoise(ctx, '#7d7d7d', 30)),
+    woodSide: createNoiseTexture(ctx => {
+        for (let x = 0; x < 16; x++) {
+            const stripe = (x % 4 === 0) ? -12 : 0;
+            for (let y = 0; y < 16; y++) {
+                const v = stripe + Math.floor((Math.random() - 0.5) * 14);
+                ctx.fillStyle = `rgb(${102 + v}, ${76 + v}, ${44 + v})`;
+                ctx.fillRect(x, y, 1, 1);
+            }
+        }
+    }),
+    woodTop: createNoiseTexture(ctx => {
+        fillPixelNoise(ctx, '#b8945f', 16);
+        ctx.strokeStyle = '#664c2c';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(1.5, 1.5, 13, 13);
+        ctx.strokeRect(4.5, 4.5, 7, 7);
+    }),
+    leaves: createNoiseTexture(ctx => fillPixelNoise(ctx, '#38761d', 40))
+};
+
+// Материалы и описание типов блоков
+const BLOCK_TYPES = {
+    1: {
+        name: 'Трава',
+        icon: textures.grassSide.canvas,
+        material: [
+            new THREE.MeshLambertMaterial({ map: textures.grassSide.texture }), // Право
+            new THREE.MeshLambertMaterial({ map: textures.grassSide.texture }), // Лево
+            new THREE.MeshLambertMaterial({ map: textures.grassTop.texture }),  // Верх
+            new THREE.MeshLambertMaterial({ map: textures.dirt.texture }),      // Низ
+            new THREE.MeshLambertMaterial({ map: textures.grassSide.texture }), // Перед
+            new THREE.MeshLambertMaterial({ map: textures.grassSide.texture })  // Зад
+        ]
+    },
+    2: {
+        name: 'Земля',
+        icon: textures.dirt.canvas,
+        material: new THREE.MeshLambertMaterial({ map: textures.dirt.texture })
+    },
+    3: {
+        name: 'Камень',
+        icon: textures.stone.canvas,
+        material: new THREE.MeshLambertMaterial({ map: textures.stone.texture })
+    },
+    4: {
+        name: 'Дерево',
+        icon: textures.woodSide.canvas,
+        material: [
+            new THREE.MeshLambertMaterial({ map: textures.woodSide.texture }),
+            new THREE.MeshLambertMaterial({ map: textures.woodSide.texture }),
+            new THREE.MeshLambertMaterial({ map: textures.woodTop.texture }),
+            new THREE.MeshLambertMaterial({ map: textures.woodTop.texture }),
+            new THREE.MeshLambertMaterial({ map: textures.woodSide.texture }),
+            new THREE.MeshLambertMaterial({ map: textures.woodSide.texture })
+        ]
+    },
+    5: {
+        name: 'Листва',
+        icon: textures.leaves.canvas,
+        material: new THREE.MeshLambertMaterial({ map: textures.leaves.texture })
+    }
+};
+
+// ==================== 2. ИНИЦИАЛИЗАЦИЯ ХОТБАРА ====================
+let selectedBlock = 1;
+const hotbarEl = document.getElementById('hotbar');
+
+for (let i = 1; i <= 5; i++) {
+    const slot = document.createElement('div');
+    slot.className = 'slot' + (i === selectedBlock ? ' active' : '');
+    slot.id = `slot-${i}`;
+    
+    const keyLabel = document.createElement('span');
+    keyLabel.className = 'key';
+    keyLabel.textContent = i;
+    slot.appendChild(keyLabel);
+
+    const iconClone = document.createElement('canvas');
+    iconClone.width = 16;
+    iconClone.height = 16;
+    iconClone.getContext('2d').drawImage(BLOCK_TYPES[i].icon, 0, 0);
+    slot.appendChild(iconClone);
+
+    hotbarEl.appendChild(slot);
+}
+
+function selectSlot(num) {
+    if (num < 1 || num > 5) return;
+    document.getElementById(`slot-${selectedBlock}`).classList.remove('active');
+    selectedBlock = num;
+    document.getElementById(`slot-${selectedBlock}`).classList.add('active');
+}
+
+// ==================== 3. СЦЕНА, КАМЕРА И ОСВЕЩЕНИЕ ====================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+scene.fog = new THREE.Fog(0x87CEEB, 20, 45);
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.55);
+dirLight.position.set(20, 40, 15);
+scene.add(dirLight);
+
+// ==================== 4. ГЕНЕРАЦИЯ ВОКСЕЛЬНОГО МИРА ====================
+const world = new Map(); // Хранилище координат "x,y,z" -> Mesh
+const meshes = [];       // Массив мешей для Raycaster
+const blockGeo = new THREE.BoxGeometry(1, 1, 1);
+
+function getKey(x, y, z) {
+    return `${x},${y},${z}`;
+}
+
+function setBlock(x, y, z, type) {
+    const key = getKey(x, y, z);
+    if (world.has(key)) removeBlock(x, y, z);
+
+    const mesh = new THREE.Mesh(blockGeo, BLOCK_TYPES[type].material);
+    // Смещаем центр блока на +0.5, чтобы блок занимал координаты [x, x+1], [y, y+1], [z, z+1]
+    mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+    mesh.userData = { x, y, z, type };
+    scene.add(mesh);
+    world.set(key, mesh);
+    meshes.push(mesh);
+}
+
+function removeBlock(x, y, z) {
+    const key = getKey(x, y, z);
+    const mesh = world.get(key);
+    if (mesh) {
+        scene.remove(mesh);
+        world.delete(key);
+        const idx = meshes.indexOf(mesh);
+        if (idx !== -1) meshes.splice(idx, 1);
+    }
+}
+
+function hasBlock(x, y, z) {
+    return world.has(getKey(Math.floor(x), Math.floor(y), Math.floor(z)));
+}
+
+// Генерация ландшафта 24x24 (от -12 до 11)
+const WORLD_HALF = 12;
+const heights = {};
+
+for (let x = -WORLD_HALF; x < WORLD_HALF; x++) {
+    for (let z = -WORLD_HALF; z < WORLD_HALF; z++) {
+        // Плавный рельеф с помощью синуса и косинуса
+        const h = Math.floor(Math.sin(x * 0.22) * Math.cos(z * 0.22) * 2 + 3);
+        heights[`${x},${z}`] = h;
+        for (let y = 0; y <= h; y++) {
+            if (y === h) setBlock(x, y, z, 1);           // Трава сверху
+            else if (y >= h - 1) setBlock(x, y, z, 2);   // Земля под травой
+            else setBlock(x, y, z, 3);                   // Камень внизу
+        }
+    }
+}
+
+// Функция создания дерева
+function createTree(tx, ty, tz) {
+    const trunkHeight = 4;
+    for (let y = 0; y < trunkHeight; y++) {
+        setBlock(tx, ty + y, tz, 4); // Ствол
+    }
+    // Крона из листвы
+    for (let lx = -2; lx <= 2; lx++) {
+        for (let lz = -2; lz <= 2; lz++) {
+            for (let ly = 2; ly <= 4; ly++) {
+                const dist = Math.abs(lx) + Math.abs(lz);
+                if (ly === 4 && dist > 1) continue;
+                if (ly < 4 && dist === 4 && Math.random() > 0.4) continue;
+                if (lx === 0 && lz === 0 && ly < trunkHeight) continue;
+                setBlock(tx + lx, ty + ly, tz + lz, 5);
+            }
+        }
+    }
+}
+
+// Размещаем несколько деревьев на карте
+const treeCoords = [[-7, -7], [7, -6], [-6, 7], [6, 6], [0, -9]];
+for (const [tx, tz] of treeCoords) {
+    const groundY = heights[`${tx},${tz}`];
+    if (groundY !== undefined) {
+        createTree(tx, groundY + 1, tz);
+    }
+}
+
+// Рамка выделения блока, на который смотрит игрок
+const highlightGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.006, 1.006, 1.006));
+const highlightMat = new THREE.LineBasicMaterial({ color: 0x000000 });
+const highlightBox = new THREE.LineSegments(highlightGeo, highlightMat);
+highlightBox.visible = false;
+scene.add(highlightBox);
+
+// ==================== 5. ИГРОК, УПРАВЛЕНИЕ И ФИЗИКА ====================
+const player = {
+    x: 0.5,
+    y: 12,
+    z: 0.5,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    width: 0.6,
+    height: 1.75,
+    eyeHeight: 1.6,
+    speed: 5.5,
+    jumpStrength: 8.2,
+    onGround: false
+};
+
+let yaw = 0;
+let pitch = 0;
+let isLocked = false;
+const keys = {};
+
+const overlay = document.getElementById('overlay');
+overlay.addEventListener('click', () => {
+    document.body.requestPointerLock();
+});
+
+document.addEventListener('pointerlockchange', () => {
+    isLocked = (document.pointerLockElement === document.body);
+    overlay.style.display = isLocked ? 'none' : 'flex';
+});
+
+document.addEventListener('mousemove', (e) => {
+    if (!isLocked) return;
+    const sensitivity = 0.0022;
+    yaw -= e.movementX * sensitivity;
+    pitch -= e.movementY * sensitivity;
+    const maxPitch = Math.PI / 2 - 0.01;
+    pitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
+});
+
+document.addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (e.code.startsWith('Digit')) {
+        const num = parseInt(e.code.replace('Digit', ''), 10);
+        selectSlot(num);
+    }
+});
+
+document.addEventListener('keyup', (e) => {
+    keys[e.code] = false;
+});
+
+document.addEventListener('wheel', (e) => {
+    if (!isLocked) return;
+    const dir = Math.sign(e.deltaY);
+    let next = selectedBlock + dir;
+    if (next > 5) next = 1;
+    if (next < 1) next = 5;
+    selectSlot(next);
+});
+
+// Проверка пересечения хитбокса игрока (AABB) с блоками мира
+function checkWorldCollision(px, py, pz) {
+    const hw = player.width / 2;
+    const minX = Math.floor(px - hw);
+    const maxX = Math.floor(px + hw - 0.0001);
+    const minY = Math.floor(py);
+    const maxY = Math.floor(py + player.height - 0.0001);
+    const minZ = Math.floor(pz - hw);
+    const maxZ = Math.floor(pz + hw - 0.0001);
+
+    for (let x = minX; x <= maxX; x++) {
+        for (let y = minY; y <= maxY; y++) {
+            for (let z = minZ; z <= maxZ; z++) {
+                if (hasBlock(x, y, z)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+// ==================== 6. RAYCASTING (ЛОМАНИЕ И УСТАНОВКА БЛОКОВ) ====================
+const raycaster = new THREE.Raycaster();
+raycaster.far = 6; // Максимальная дальность взаимодействия
+
+function getTargetBlock() {
+    raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+    const intersects = raycaster.intersectObjects(meshes);
+    return intersects.length > 0 ? intersects[0] : null;
+}
+
+window.addEventListener('contextmenu', e => e.preventDefault());
+
+window.addEventListener('mousedown', (e) => {
+    if (!isLocked) return;
+    const hit = getTargetBlock();
+    if (!hit) return;
+
+    const { x, y, z } = hit.object.userData;
+
+    if (e.button === 0) {
+        // ЛКМ — разрушить блок
+        removeBlock(x, y, z);
+    } else if (e.button === 2) {
+        // ПКМ — поставить блок на выбранную грань
+        const normal = hit.face.normal;
+        const nx = x + Math.round(normal.x);
+        const ny = y + Math.round(normal.y);
+        const nz = z + Math.round(normal.z);
+
+        // Проверяем, чтобы новый блок не застрял внутри самого игрока
+        const hw = player.width / 2;
+        const overlapX = (player.x + hw > nx) && (player.x - hw < nx + 1);
+        const overlapY = (player.y + player.height > ny) && (player.y < ny + 1);
+        const overlapZ = (player.z + hw > nz) && (player.z - hw < nz + 1);
+
+        if (!(overlapX && overlapY && overlapZ)) {
+            setBlock(nx, ny, nz, selectedBlock);
+        }
+    }
+});
+
+// ==================== 7. ИГРОВОЙ ЦИКЛ ====================
+let prevTime = performance.now();
+const GRAVITY = 24;
+
+function updatePhysics(dt) {
+    // Направление взгляда в горизонтальной плоскости
+    const forwardX = -Math.sin(yaw);
+    const forwardZ = -Math.cos(yaw);
+    const rightX = Math.cos(yaw);
+    const rightZ = -Math.sin(yaw);
+
+    let moveX = 0;
+    let moveZ = 0;
+
+    if (keys['KeyW']) { moveX += forwardX; moveZ += forwardZ; }
+    if (keys['KeyS']) { moveX -= forwardX; moveZ -= forwardZ; }
+    if (keys['KeyD']) { moveX += rightX;   moveZ += rightZ; }
+    if (keys['KeyA']) { moveX -= rightX;   moveZ -= rightZ; }
+
+    // Нормализация вектора движения по диагонали
+    const len = Math.hypot(moveX, moveZ);
+    if (len > 0) {
+        moveX = (moveX / len) * player.speed;
+        moveZ = (moveZ / len) * player.speed;
+    }
+
+    player.vx = moveX;
+    player.vz = moveZ;
+
+    // Прыжок
+    if (keys['Space'] && player.onGround) {
+        player.vy = player.jumpStrength;
+        player.onGround = false;
+    }
+
+    // Применение гравитации
+    player.vy -= GRAVITY * dt;
+
+    // Перемещение и проверка коллизий по оси X
+    player.x += player.vx * dt;
+    if (checkWorldCollision(player.x, player.y, player.z)) {
+        player.x -= player.vx * dt;
+    }
+
+    // Перемещение и проверка коллизий по оси Z
+    player.z += player.vz * dt;
+    if (checkWorldCollision(player.x, player.y, player.z)) {
+        player.z -= player.vz * dt;
+    }
+
+    // Перемещение и проверка коллизий по оси Y
+    player.y += player.vy * dt;
+    player.onGround = false;
+    if (checkWorldCollision(player.x, player.y, player.z)) {
+        if (player.vy < 0) {
+            player.onGround = true;
+            player.y = Math.floor(player.y) + 1;
+        } else if (player.vy > 0) {
+            player.y -= player.vy * dt;
+        }
+        player.vy = 0;
+    }
+
+    // Респаун, если игрок упал в бездну
+    if (player.y < -25) {
+        player.x = 0.5;
+        player.y = 15;
+        player.z = 0.5;
+        player.vy = 0;
+    }
+
+    // Обновление позиции и вращения камеры
+    camera.position.set(player.x, player.y + player.eyeHeight, player.z);
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    const now = performance.now();
+    const dt = Math.min((now - prevTime) / 1000, 0.1);
+    prevTime = now;
+
+    if (isLocked) {
+        updatePhysics(dt);
+
+        // Обновление контура выделенного блока
+        const hit = getTargetBlock();
+        if (hit) {
+            highlightBox.visible = true;
+            highlightBox.position.copy(hit.object.position);
+        } else {
+            highlightBox.visible = false;
+        }
+    }
+
+    renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>
